@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     muserag_app_museum_json: str = Field(alias="MUSERAG_APP_MUSEUM_JSON")
     muserag_app_data_ts: str = Field(alias="MUSERAG_APP_DATA_TS")
     muserag_top_k: int = Field(default=4, alias="MUSERAG_TOP_K")
+    muserag_max_source_chars: int = Field(default=500, alias="MUSERAG_MAX_SOURCE_CHARS")
+    muserag_chat_max_tokens: int = Field(default=220, alias="MUSERAG_CHAT_MAX_TOKENS")
     muserag_log_interactions: bool = Field(default=True, alias="MUSERAG_LOG_INTERACTIONS")
     cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
 

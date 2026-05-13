@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import chromadb
@@ -8,6 +10,8 @@ from openai import OpenAI
 from .config import Settings
 from .loaders import DocumentChunk, load_museum_json_chunks, load_pdf_chunks, load_text_file_chunks
 from .schemas import ArtworkContext, ChatQueryRequest, SourceSnippet
+
+logger = logging.getLogger("muserag.rag")
 
 
 class RagService:
@@ -66,6 +70,7 @@ class RagService:
         for idx, text in enumerate(documents):
             metadata = metadatas[idx] or {}
             distance = float(distances[idx]) if idx < len(distances) else 1.0
+            image_url = metadata.get("image_url")
             snippets.append(
                 SourceSnippet(
                     id=str(ids[idx]),
@@ -74,9 +79,16 @@ class RagService:
                     score=max(0.0, 1.0 - distance),
                     text=text,
                     metadata={str(k): v for k, v in metadata.items()},
+                    image_url=str(image_url) if image_url else None,
                 )
             )
         return snippets
+
+    def _trim_source_text(self, text: str) -> str:
+        max_chars = max(120, self.settings.muserag_max_source_chars)
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
 
     @staticmethod
     def _artwork_context_block(artwork_context: ArtworkContext | None) -> str:
@@ -102,7 +114,7 @@ class RagService:
     def _build_messages(self, payload: ChatQueryRequest, sources: list[SourceSnippet]) -> list[dict[str, Any]]:
         source_text = "\n\n".join(
             [
-                f"Fuente {index + 1} ({source.kind}, score={source.score:.3f}):\n{source.text}"
+                f"Fuente {index + 1} ({source.kind}, score={source.score:.3f}):\n{self._trim_source_text(source.text)}"
                 for index, source in enumerate(sources)
             ]
         )
@@ -131,12 +143,30 @@ class RagService:
 
     def answer_question(self, payload: ChatQueryRequest) -> tuple[str, list[SourceSnippet]]:
         top_k = payload.top_k or self.settings.muserag_top_k
+        started_at = time.perf_counter()
+
+        embed_and_query_started_at = time.perf_counter()
         sources = self._query_sources(payload.question, top_k=top_k)
+        retrieval_ms = (time.perf_counter() - embed_and_query_started_at) * 1000
+
         messages = self._build_messages(payload, sources)
+        generation_started_at = time.perf_counter()
         response = self.client.chat.completions.create(
             model=self.settings.lm_studio_chat_model,
             temperature=0.2,
             messages=messages,
+            max_tokens=self.settings.muserag_chat_max_tokens,
         )
+        generation_ms = (time.perf_counter() - generation_started_at) * 1000
+        total_ms = (time.perf_counter() - started_at) * 1000
+
         answer = response.choices[0].message.content or "No pude generar una respuesta en este momento."
+        logger.info(
+            "Consulta RAG | top_k=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=%.1f | total_ms=%.1f",
+            top_k,
+            len(sources),
+            retrieval_ms,
+            generation_ms,
+            total_ms,
+        )
         return answer.strip(), sources

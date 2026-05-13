@@ -144,19 +144,52 @@ MUSERAG_COLLECTION=museiq_knowledge
 MUSERAG_PDF_PATH=./tumbas-reales-sipan.pdf
 MUSERAG_APP_MUSEUM_JSON=../museiqApp/content/museum.json
 MUSERAG_APP_DATA_TS=../museiqApp/datos.ts
-MUSERAG_TOP_K=4
+MUSERAG_TOP_K=2
+MUSERAG_MAX_SOURCE_CHARS=500
+MUSERAG_CHAT_MAX_TOKENS=220
 CORS_ORIGINS=*
 ```
 
-## Ingesta inicial
+## Flujo de ingesta
 
-Reconstruye la base vectorial desde PDF + `museum.json` + `datos.ts`:
+### Paso 1: Extraer imágenes del PDF
+
+Las imágenes del libro se extraen una sola vez y se almacenan en `assets/book_figures/` listas para consulta:
 
 ```bash
 cd /home/eduardo/proyectos/iot/museiq/museRAG
 source .venv/bin/activate
+python extract_images.py --rebuild
+```
+
+Esto:
+- Lee el PDF configurado en `.env` (`MUSERAG_PDF_PATH`)
+- Extrae todas las imágenes e identifica referencias (`Fig. 01`, `Fig. 02`, etc.)
+- Guarda imágenes en `assets/book_figures/` con nombres descriptivos
+- Imprime un reporte de figuras extraídas
+
+Salida esperada:
+```
+🖼️ Extrayendo imágenes del PDF: tumbas-reales-sipan.pdf
+   ✓ Página 3: guardada Fig_01_p3.png
+   ✓ Página 5: guardada Fig_02_p5.png
+   ...
+✅ Extracción completada: 24 imágenes guardadas
+```
+
+### Paso 2: Reconstruir la base vectorial
+
+Ahora se indexa el contenido y se vinculan las imágenes pre-extraídas:
+
+```bash
 python ingest.py --rebuild
 ```
+
+Esto:
+- Lee PDF + `museum.json` + `datos.ts`
+- Chunked el texto con referencias a figuras
+- Vincula cada chunk a su imagen correspondiente (si existe)
+- Construye los embeddings y almacena en Chroma
 
 ## Levantar la API
 
@@ -194,6 +227,7 @@ Desde esa interfaz puedes:
 - `GET /health`
 - `GET /catalog/artworks`
 - `GET /media/artworks/{room}/{filename}`
+- `GET /media/book_figures/{filename}` — Imágenes extraídas del PDF
 - `POST /ingest/rebuild`
 - `POST /chat/query`
 - `POST /api/preguntar`
