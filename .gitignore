@@ -3,3 +3,5 @@ storage/
 .env
 __pycache__/
 app/__pycache__/
+
+assets/book_figures/

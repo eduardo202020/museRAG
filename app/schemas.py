@@ -37,6 +37,7 @@ class SourceSnippet(BaseModel):
     score: float
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    image_url: str | None = None
 
 
 class ChatQueryResponse(BaseModel):

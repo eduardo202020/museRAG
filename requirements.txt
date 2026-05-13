@@ -4,3 +4,5 @@ chromadb==1.0.20
 openai==1.107.2
 pydantic-settings==2.10.1
 pypdf==6.0.0
+Pillow==11.1.0
+pdf2image==1.16.3

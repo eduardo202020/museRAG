@@ -24,6 +24,7 @@ from .schemas import (
 settings = get_settings()
 rag_service = RagService(settings)
 artworks_dir = (Path(__file__).resolve().parent.parent / "assets" / "artworks").resolve()
+book_figures_dir = (Path(__file__).resolve().parent.parent / "assets" / "book_figures").resolve()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("muserag.api")
@@ -39,6 +40,8 @@ app.add_middleware(
 )
 
 app.mount("/media/artworks", StaticFiles(directory=str(artworks_dir)), name="artworks")
+book_figures_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media/book_figures", StaticFiles(directory=str(book_figures_dir)), name="book_figures")
 
 
 @app.get("/health")
@@ -262,11 +265,14 @@ def chat_ui() -> str:
       sourcesEl.className = "";
       sourcesEl.innerHTML = sources.map((source, index) => {
         const page = source.metadata && source.metadata.page ? ` | pagina ${source.metadata.page}` : "";
+        const figureRef = source.metadata && source.metadata.figure_ref ? ` | ${source.metadata.figure_ref}` : "";
+        const imageHtml = source.image_url ? `<div style="margin-top: 12px;"><img src="${source.image_url}" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);"></div>` : "";
         return `
           <article class="source">
-            <div class="meta">[${index + 1}] ${source.kind} | score=${source.score.toFixed(3)}${page}</div>
+            <div class="meta">[${index + 1}] ${source.kind} | score=${source.score.toFixed(3)}${page}${figureRef}</div>
             <div class="meta">${source.source}</div>
             <div>${source.text}</div>
+            ${imageHtml}
           </article>
         `;
       }).join("");
