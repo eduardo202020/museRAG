@@ -40,10 +40,18 @@ class SourceSnippet(BaseModel):
     image_url: str | None = None
 
 
+class ResponseMeta(BaseModel):
+    total_ms: float
+    retrieval_ms: float
+    generation_ms: float
+    source_count: int
+
+
 class ChatQueryResponse(BaseModel):
     answer: str
     sources: list[SourceSnippet]
     used_artwork_context: bool
+    meta: ResponseMeta | None = None
 
 
 class MobileQuestionRequest(BaseModel):
@@ -60,6 +68,7 @@ class MobileQuestionResponse(BaseModel):
     museo: str | None = None
     sala: str | None = None
     obra: str | None = None
+    meta: ResponseMeta | None = None
 
 
 class IngestResponse(BaseModel):

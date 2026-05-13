@@ -9,7 +9,7 @@ from openai import OpenAI
 
 from .config import Settings
 from .loaders import DocumentChunk, load_museum_json_chunks, load_pdf_chunks, load_text_file_chunks
-from .schemas import ArtworkContext, ChatQueryRequest, SourceSnippet
+from .schemas import ArtworkContext, ChatQueryRequest, ResponseMeta, SourceSnippet
 
 logger = logging.getLogger("muserag.rag")
 
@@ -141,7 +141,7 @@ class RagService:
             {"role": "user", "content": user_prompt},
         ]
 
-    def answer_question(self, payload: ChatQueryRequest) -> tuple[str, list[SourceSnippet]]:
+    def answer_question(self, payload: ChatQueryRequest) -> tuple[str, list[SourceSnippet], ResponseMeta]:
         top_k = payload.top_k or self.settings.muserag_top_k
         started_at = time.perf_counter()
 
@@ -169,4 +169,13 @@ class RagService:
             generation_ms,
             total_ms,
         )
-        return answer.strip(), sources
+        return (
+            answer.strip(),
+            sources,
+            ResponseMeta(
+                total_ms=round(total_ms, 1),
+                retrieval_ms=round(retrieval_ms, 1),
+                generation_ms=round(generation_ms, 1),
+                source_count=len(sources),
+            ),
+        )

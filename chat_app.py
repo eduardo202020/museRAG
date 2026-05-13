@@ -128,7 +128,7 @@ class MuseRAGDesktopApp:
 
     def _run_question(self, payload: ChatQueryRequest) -> None:
         try:
-            answer, sources = self.service.answer_question(payload)
+            answer, sources, _meta = self.service.answer_question(payload)
             self.root.after(0, self._show_response, answer, sources)
         except Exception as exc:
             self.root.after(0, self._show_error, "No se pudo completar la consulta", str(exc))

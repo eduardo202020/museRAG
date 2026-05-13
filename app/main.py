@@ -356,11 +356,12 @@ def rebuild_ingest() -> IngestResponse:
 @app.post("/chat/query", response_model=ChatQueryResponse)
 def chat_query(payload: ChatQueryRequest) -> ChatQueryResponse:
     try:
-        answer, sources = rag_service.answer_question(payload)
+        answer, sources, meta = rag_service.answer_question(payload)
         return ChatQueryResponse(
             answer=answer,
             sources=sources,
             used_artwork_context=payload.artwork_context is not None,
+            meta=meta,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -386,7 +387,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             artwork_id=payload.obra,
             artwork_context=payload.artwork_context,
         )
-        answer, sources = rag_service.answer_question(internal_payload)
+        answer, sources, meta = rag_service.answer_question(internal_payload)
         if settings.muserag_log_interactions:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
@@ -402,6 +403,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             museo=payload.museo,
             sala=payload.sala,
             obra=payload.obra,
+            meta=meta,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
