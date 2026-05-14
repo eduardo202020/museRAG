@@ -334,3 +334,61 @@ npx expo start -c
 
 - Las imagenes de las obras se resuelven desde:
   - `museiqApp/lib/artwork-images.ts`
+
+## Future Features
+
+Estas son mejoras propuestas para la siguiente etapa del sistema, enfocadas en experiencia de usuario, calidad de respuesta y sensacion de mediacion cultural.
+
+### 1. Confianza en la respuesta
+
+- Mostrar mejor el origen de la respuesta con etiquetas como `Sala + ficha curatorial + libro`.
+- Indicar cuantas fuentes sustentan la respuesta.
+- Devolver respuestas guiadas cuando no haya suficiente contexto en vez de una salida demasiado generica.
+- Diferenciar mejor errores de red, timeout y errores de generacion.
+
+### 2. Conversacion mas fluida
+
+- Historial corto de conversacion por sesion para evitar preguntas aisladas.
+- Preguntas de seguimiento sugeridas despues de cada respuesta.
+- Atajos de intencion como `Quien fue`, `Que representa`, `Por que importa`, `Como se hizo`.
+- Persistencia de la ultima conversacion al cerrar y reabrir el chat.
+
+### 3. Experiencia mas museo
+
+- Tono aun mas cercano a mediacion cultural y menos estilo chatbot tecnico.
+- Respuestas estructuradas por bloques como `Respuesta breve`, `Dato clave`, `Imagen relacionada`.
+- Microcopy mas curatorial en botones, ayudas y mensajes de espera.
+- Mayor identidad visual museografica en la interfaz del cliente.
+
+### 4. Contexto inteligente del recorrido
+
+- Usar zona, beacon o posicion actual como parte explicita del contexto de respuesta.
+- Adaptar la respuesta segun el punto del recorrido en el que esta el visitante.
+- Sugerir automaticamente observaciones contextuales incluso antes de que el usuario pregunte.
+- Conectar mejor una obra con la anterior o la siguiente dentro de la narrativa de sala.
+
+### 5. Mejoras tecnicas del RAG
+
+- Filtrado real por `museum_id`, `room_id` y `artwork_id` en Chroma, no solo condicionamiento por prompt.
+- Memoria conversacional corta en backend para mantener continuidad tematica.
+- Cache de preguntas repetidas por obra para reducir latencia.
+- Streaming de respuesta para una sensacion de mayor inmediatez.
+- Observabilidad de tiempos, errores y preguntas frecuentes para iterar con datos reales.
+
+### 6. Mejoras en voz
+
+- Refinar el flujo `STT + TTS` de `museiqApp` con modos manos libres.
+- Permitir dictado y envio asistido con menos toques.
+- Añadir confirmaciones suaves por voz o haptica al iniciar y terminar una consulta.
+- Ajustar lectura de respuestas con mejor segmentacion y prosodia.
+
+## Roadmap sugerido
+
+Orden recomendado para la siguiente iteracion:
+
+1. Historial corto de chat.
+2. Atajos compactos de intencion por obra.
+3. Respuestas visualmente divididas en bloques.
+4. Mejor uso de contexto de sala y zona.
+5. Memoria conversacional por sesion.
+6. Filtrado real por `sala/obra` en recuperacion RAG.

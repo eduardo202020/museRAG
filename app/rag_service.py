@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -12,6 +13,7 @@ from .loaders import DocumentChunk, load_museum_json_chunks, load_pdf_chunks, lo
 from .schemas import ArtworkContext, ChatQueryRequest, ResponseMeta, SourceSnippet
 
 logger = logging.getLogger("muserag.rag")
+CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 
 class RagService:
@@ -122,6 +124,8 @@ class RagService:
 
         system_prompt = (
             "Eres MuseIQ, un guia de museo en espanol. "
+            "Debes responder exclusivamente en espanol latinoamericano. "
+            "No uses chino, ingles ni otro idioma salvo nombres propios o terminos arqueologicos inevitables. "
             "Responde con claridad, tono cercano y precision historica. "
             "Usa primero el contexto de la obra actual si existe y luego el conocimiento recuperado. "
             "Si la respuesta no esta sustentada por el contexto, dilo con honestidad y evita inventar datos. "
@@ -140,6 +144,40 @@ class RagService:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(CJK_PATTERN.search(text))
+
+    def _regenerate_in_spanish(self, messages: list[dict[str, Any]], answer: str) -> str:
+        retry_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Corrige la respuesta anterior. "
+                    "Devuelve una nueva version exclusivamente en espanol latinoamericano. "
+                    "Elimina cualquier caracter o frase en chino u otro idioma. "
+                    "Conserva el sentido historico y responde en maximo 6 frases."
+                ),
+            },
+            *messages,
+            {
+                "role": "assistant",
+                "content": answer,
+            },
+            {
+                "role": "user",
+                "content": "Reescribe esa respuesta solo en espanol claro para un visitante del museo.",
+            },
+        ]
+        retry_response = self.client.chat.completions.create(
+            model=self.settings.lm_studio_chat_model,
+            temperature=0.1,
+            messages=retry_messages,
+            max_tokens=self.settings.muserag_chat_max_tokens,
+        )
+        retried_answer = retry_response.choices[0].message.content or ""
+        return retried_answer.strip()
 
     def answer_question(self, payload: ChatQueryRequest) -> tuple[str, list[SourceSnippet], ResponseMeta]:
         top_k = payload.top_k or self.settings.muserag_top_k
@@ -161,6 +199,17 @@ class RagService:
         total_ms = (time.perf_counter() - started_at) * 1000
 
         answer = response.choices[0].message.content or "No pude generar una respuesta en este momento."
+        answer = answer.strip()
+        if self._contains_cjk(answer):
+            logger.warning("Se detecto salida con caracteres CJK; reintentando respuesta en espanol.")
+            retried_answer = self._regenerate_in_spanish(messages, answer)
+            if retried_answer and not self._contains_cjk(retried_answer):
+                answer = retried_answer
+            else:
+                answer = (
+                    "Puedo ayudarte con esa pregunta, pero en este momento hubo un problema de idioma en la generacion. "
+                    "Intenta formularla otra vez para responderte en espanol."
+                )
         logger.info(
             "Consulta RAG | top_k=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=%.1f | total_ms=%.1f",
             top_k,
@@ -170,7 +219,7 @@ class RagService:
             total_ms,
         )
         return (
-            answer.strip(),
+            answer,
             sources,
             ResponseMeta(
                 total_ms=round(total_ms, 1),
