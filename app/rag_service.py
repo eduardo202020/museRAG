@@ -3,17 +3,41 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections import deque
 from typing import Any
 
 import chromadb
 from openai import OpenAI
 
 from .config import Settings
-from .loaders import DocumentChunk, load_museum_json_chunks, load_pdf_chunks, load_text_file_chunks
+from .loaders import (
+    DocumentChunk,
+    load_artwork_chunks_from_ts,
+    load_museum_json_chunks,
+    load_pdf_chunks,
+    load_text_file_chunks,
+)
 from .schemas import ArtworkContext, ChatQueryRequest, ResponseMeta, SourceSnippet
 
 logger = logging.getLogger("muserag.rag")
 CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+STRUCTURED_RESPONSE_TEMPLATE = (
+    "Devuelve la respuesta final con este formato exacto y en este orden:\n"
+    "Respuesta breve: <explicacion principal en 2 o 3 frases>\n"
+    "Dato clave: <un hallazgo, relacion o detalle puntual en 1 o 2 frases>\n"
+    "Imagen relacionada: <explica brevemente que imagen o tipo de imagen acompana la respuesta; "
+    "si no hay imagen util en las fuentes, di 'No encontre una imagen relacionada clara en las fuentes recuperadas.'>\n"
+    "Siguiente mirada: <sugiere con iniciativa de guia experimentado un detalle para observar, comparar o preguntar despues>\n"
+    "No uses vietas, markdown ni titulos alternativos."
+)
+MAX_SESSION_TURNS = 3
+MAX_ACTIVE_SESSIONS = 100
+MIN_CONTEXTUAL_RESULTS = 2
+LOW_SUPPORT_THRESHOLD = 0.22
+
+
+class SessionMemoryTurn(dict[str, str]):
+    pass
 
 
 class RagService:
@@ -23,6 +47,7 @@ class RagService:
         self.client = OpenAI(base_url=settings.lm_studio_base_url, api_key="lm-studio")
         self.chroma = chromadb.PersistentClient(path=str(settings.chroma_dir))
         self.collection = self.chroma.get_or_create_collection(name=settings.muserag_collection, metadata={"hnsw:space": "cosine"})
+        self.session_memories: dict[str, deque[SessionMemoryTurn]] = {}
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         response = self.client.embeddings.create(model=self.settings.lm_studio_embed_model, input=texts)
@@ -38,6 +63,7 @@ class RagService:
         documents: list[DocumentChunk] = []
         documents.extend(load_pdf_chunks(self.settings.pdf_path))
         documents.extend(load_museum_json_chunks(self.settings.museum_json_path))
+        documents.extend(load_artwork_chunks_from_ts(self.settings.app_data_ts_path))
         documents.extend(load_text_file_chunks(self.settings.app_data_ts_path, kind="app_data_ts"))
 
         if not documents:
@@ -55,12 +81,29 @@ class RagService:
     def count_documents(self) -> int:
         return self.collection.count()
 
-    def _query_sources(self, question: str, top_k: int) -> list[SourceSnippet]:
+    @staticmethod
+    def _source_label_for(kind: str) -> str:
+        labels = {
+            "pdf": "Libro del museo",
+            "museum_json": "Narrativa de sala",
+            "app_artwork": "Ficha curatorial",
+            "app_data_ts": "Dataset curatorial",
+        }
+        return labels.get(kind, "Fuente del museo")
+
+    def _run_query(
+        self,
+        question: str,
+        top_k: int,
+        *,
+        where: dict[str, Any] | None = None,
+    ) -> list[SourceSnippet]:
         query_embedding = self._embed_texts([question])[0]
         result = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["documents", "metadatas", "distances"],
+            where=where,
         )
 
         documents = result.get("documents", [[]])[0]
@@ -73,18 +116,58 @@ class RagService:
             metadata = metadatas[idx] or {}
             distance = float(distances[idx]) if idx < len(distances) else 1.0
             image_url = metadata.get("image_url")
+            kind = str(metadata.get("kind", "unknown"))
             snippets.append(
                 SourceSnippet(
                     id=str(ids[idx]),
                     source=str(metadata.get("source", "unknown")),
-                    kind=str(metadata.get("kind", "unknown")),
+                    kind=kind,
                     score=max(0.0, 1.0 - distance),
                     text=text,
                     metadata={str(k): v for k, v in metadata.items()},
                     image_url=str(image_url) if image_url else None,
+                    source_label=self._source_label_for(kind),
                 )
             )
         return snippets
+
+    @staticmethod
+    def _dedupe_sources(sources: list[SourceSnippet]) -> list[SourceSnippet]:
+        deduped: list[SourceSnippet] = []
+        seen_ids: set[str] = set()
+        for source in sorted(sources, key=lambda item: item.score, reverse=True):
+            if source.id in seen_ids:
+                continue
+            seen_ids.add(source.id)
+            deduped.append(source)
+        return deduped
+
+    def _query_sources(self, payload: ChatQueryRequest, top_k: int) -> tuple[list[SourceSnippet], list[str]]:
+        collected: list[SourceSnippet] = []
+        applied_filters: list[str] = []
+
+        if payload.artwork_id:
+            artwork_sources = self._run_query(
+                payload.question,
+                top_k=max(top_k, MIN_CONTEXTUAL_RESULTS),
+                where={"artwork_id": payload.artwork_id},
+            )
+            if artwork_sources:
+                applied_filters.append(f"artwork_id={payload.artwork_id}")
+                collected.extend(artwork_sources)
+
+        if payload.room_id and len(self._dedupe_sources(collected)) < MIN_CONTEXTUAL_RESULTS:
+            room_sources = self._run_query(
+                payload.question,
+                top_k=max(top_k, MIN_CONTEXTUAL_RESULTS),
+                where={"room_id": payload.room_id},
+            )
+            if room_sources:
+                applied_filters.append(f"room_id={payload.room_id}")
+                collected.extend(room_sources)
+
+        collected.extend(self._run_query(payload.question, top_k=top_k))
+        return self._dedupe_sources(collected)[:top_k], applied_filters
 
     def _trim_source_text(self, text: str) -> str:
         max_chars = max(120, self.settings.muserag_max_source_chars)
@@ -113,14 +196,78 @@ class RagService:
             lines.append(f"Preguntas sugeridas: {', '.join(artwork_context.suggested_questions)}")
         return "\n".join(lines)
 
+    def _get_session_memory_block(self, session_id: str | None) -> str:
+        if not session_id:
+            return ""
+
+        turns = self.session_memories.get(session_id)
+        if not turns:
+            return ""
+
+        blocks = []
+        for index, turn in enumerate(turns, start=1):
+            blocks.append(
+                f"Turno previo {index}:\n"
+                f"Pregunta: {turn['question']}\n"
+                f"Respuesta: {turn['answer']}"
+            )
+        return "\n\n".join(blocks)
+
+    def _remember_turn(self, session_id: str | None, question: str, answer: str) -> None:
+        if not session_id:
+            return
+
+        if session_id not in self.session_memories and len(self.session_memories) >= MAX_ACTIVE_SESSIONS:
+            oldest_session_id = next(iter(self.session_memories))
+            self.session_memories.pop(oldest_session_id, None)
+
+        session_turns = self.session_memories.setdefault(
+            session_id,
+            deque(maxlen=MAX_SESSION_TURNS),
+        )
+        session_turns.append(
+            SessionMemoryTurn(question=question.strip(), answer=answer.strip())
+        )
+
+    @staticmethod
+    def _compute_support_level(sources: list[SourceSnippet], artwork_context: ArtworkContext | None) -> str:
+        if not sources:
+            return "bajo"
+
+        top_score = sources[0].score
+        if top_score >= 0.55 or (top_score >= 0.35 and artwork_context is not None):
+            return "alto"
+        if top_score >= LOW_SUPPORT_THRESHOLD or artwork_context is not None:
+            return "medio"
+        return "bajo"
+
+    @staticmethod
+    def _build_low_context_answer(artwork_context: ArtworkContext | None) -> str:
+        if artwork_context and artwork_context.title:
+            return (
+                f"Respuesta breve: Puedo orientarte sobre {artwork_context.title}, pero ahora mismo el sustento recuperado es limitado y prefiero no afirmar mas de lo que muestran las fuentes.\n"
+                f"Dato clave: Con el contexto curatorial disponible, esta obra se relaciona con {artwork_context.room_relation or 'la narrativa de su sala'} y conviene hacer una pregunta mas puntual para profundizar.\n"
+                "Imagen relacionada: No encontre una imagen relacionada clara en las fuentes recuperadas.\n"
+                f"Siguiente mirada: Si quieres, puedo ayudarte mejor si me preguntas por un detalle visible de {artwork_context.title}, su tecnica o su relacion con la sala."
+            )
+
+        return (
+            "Respuesta breve: En este momento no encontre suficiente contexto confiable para responder con precision a esa pregunta.\n"
+            "Dato clave: Si quieres, prueba con una pregunta mas concreta sobre la obra actual, la sala o su importancia dentro del recorrido.\n"
+            "Imagen relacionada: No encontre una imagen relacionada clara en las fuentes recuperadas.\n"
+            "Siguiente mirada: Podemos seguir por una pista mas especifica, como el material de la obra, el personaje representado o lo que comunica dentro de la sala."
+        )
+
     def _build_messages(self, payload: ChatQueryRequest, sources: list[SourceSnippet]) -> list[dict[str, Any]]:
         source_text = "\n\n".join(
             [
-                f"Fuente {index + 1} ({source.kind}, score={source.score:.3f}):\n{self._trim_source_text(source.text)}"
+                f"Fuente {index + 1} ({source.source_label or source.kind}, score={source.score:.3f}):\n{self._trim_source_text(source.text)}"
                 for index, source in enumerate(sources)
             ]
         )
         artwork_context = self._artwork_context_block(payload.artwork_context)
+        session_memory = self._get_session_memory_block(payload.session_id)
+        support_level = self._compute_support_level(sources, payload.artwork_context)
 
         system_prompt = (
             "Eres MuseIQ, un guia de museo en espanol. "
@@ -128,15 +275,20 @@ class RagService:
             "No uses chino, ingles ni otro idioma salvo nombres propios o terminos arqueologicos inevitables. "
             "Responde con claridad, tono cercano y precision historica. "
             "Usa primero el contexto de la obra actual si existe y luego el conocimiento recuperado. "
+            "Si existe memoria conversacional reciente, usala para mantener continuidad sin repetir toda la respuesta anterior. "
+            "Actua como un guia experimentado: no te limites a contestar, tambien sugiere un siguiente detalle para mirar o una relacion valiosa para seguir explorando. "
             "Si la respuesta no esta sustentada por el contexto, dilo con honestidad y evita inventar datos. "
-            "Responde en maximo 6 frases."
+            "Responde en maximo 6 frases. "
+            f"{STRUCTURED_RESPONSE_TEMPLATE}"
         )
         user_prompt = (
             f"Pregunta del visitante: {payload.question}\n\n"
             f"Contexto actual de la app:\n"
             f"- museum_id: {payload.museum_id or 'N/D'}\n"
             f"- room_id: {payload.room_id or 'N/D'}\n"
-            f"- artwork_id: {payload.artwork_id or 'N/D'}\n\n"
+            f"- artwork_id: {payload.artwork_id or 'N/D'}\n"
+            f"- support_level: {support_level}\n\n"
+            f"Memoria conversacional reciente:\n{session_memory or 'No disponible'}\n\n"
             f"Contexto de obra actual:\n{artwork_context or 'No disponible'}\n\n"
             f"Fragmentos recuperados:\n{source_text or 'No hay fragmentos recuperados.'}"
         )
@@ -157,7 +309,8 @@ class RagService:
                     "Corrige la respuesta anterior. "
                     "Devuelve una nueva version exclusivamente en espanol latinoamericano. "
                     "Elimina cualquier caracter o frase en chino u otro idioma. "
-                    "Conserva el sentido historico y responde en maximo 6 frases."
+                    "Conserva el sentido historico y responde en maximo 6 frases. "
+                    f"{STRUCTURED_RESPONSE_TEMPLATE}"
                 ),
             },
             *messages,
@@ -184,8 +337,34 @@ class RagService:
         started_at = time.perf_counter()
 
         embed_and_query_started_at = time.perf_counter()
-        sources = self._query_sources(payload.question, top_k=top_k)
+        sources, applied_filters = self._query_sources(payload, top_k=top_k)
         retrieval_ms = (time.perf_counter() - embed_and_query_started_at) * 1000
+        support_level = self._compute_support_level(sources, payload.artwork_context)
+
+        if support_level == "bajo" and payload.artwork_context is None:
+            answer = self._build_low_context_answer(payload.artwork_context)
+            total_ms = (time.perf_counter() - started_at) * 1000
+            logger.info(
+                "Consulta RAG | top_k=%s | soporte=%s | filtros=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=0.0 | total_ms=%.1f",
+                top_k,
+                support_level,
+                applied_filters,
+                len(sources),
+                retrieval_ms,
+                total_ms,
+            )
+            return (
+                answer,
+                sources,
+                ResponseMeta(
+                    total_ms=round(total_ms, 1),
+                    retrieval_ms=round(retrieval_ms, 1),
+                    generation_ms=0.0,
+                    source_count=len(sources),
+                    support_level=support_level,
+                    applied_filters=applied_filters,
+                ),
+            )
 
         messages = self._build_messages(payload, sources)
         generation_started_at = time.perf_counter()
@@ -210,9 +389,12 @@ class RagService:
                     "Puedo ayudarte con esa pregunta, pero en este momento hubo un problema de idioma en la generacion. "
                     "Intenta formularla otra vez para responderte en espanol."
                 )
+        self._remember_turn(payload.session_id, payload.question, answer)
         logger.info(
-            "Consulta RAG | top_k=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=%.1f | total_ms=%.1f",
+            "Consulta RAG | top_k=%s | soporte=%s | filtros=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=%.1f | total_ms=%.1f",
             top_k,
+            support_level,
+            applied_filters,
             len(sources),
             retrieval_ms,
             generation_ms,
@@ -226,5 +408,7 @@ class RagService:
                 retrieval_ms=round(retrieval_ms, 1),
                 generation_ms=round(generation_ms, 1),
                 source_count=len(sources),
+                support_level=support_level,
+                applied_filters=applied_filters,
             ),
         )

@@ -385,6 +385,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             museum_id=payload.museo,
             room_id=payload.sala,
             artwork_id=payload.obra,
+            session_id=payload.session_id,
             artwork_context=payload.artwork_context,
         )
         answer, sources, meta = rag_service.answer_question(internal_payload)
@@ -403,6 +404,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             museo=payload.museo,
             sala=payload.sala,
             obra=payload.obra,
+            session_id=payload.session_id,
             meta=meta,
         )
     except Exception as exc:

@@ -26,6 +26,7 @@ class ChatQueryRequest(BaseModel):
     museum_id: str | None = Field(default=None, alias="museo")
     room_id: str | None = None
     artwork_id: str | None = None
+    session_id: str | None = None
     top_k: int | None = None
     artwork_context: ArtworkContext | None = None
 
@@ -38,6 +39,7 @@ class SourceSnippet(BaseModel):
     text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     image_url: str | None = None
+    source_label: str | None = None
 
 
 class ResponseMeta(BaseModel):
@@ -45,6 +47,8 @@ class ResponseMeta(BaseModel):
     retrieval_ms: float
     generation_ms: float
     source_count: int
+    support_level: str | None = None
+    applied_filters: list[str] = Field(default_factory=list)
 
 
 class ChatQueryResponse(BaseModel):
@@ -59,6 +63,7 @@ class MobileQuestionRequest(BaseModel):
     museo: str | None = None
     sala: str | None = None
     obra: str | None = None
+    session_id: str | None = None
     artwork_context: ArtworkContext | None = None
 
 
@@ -68,6 +73,7 @@ class MobileQuestionResponse(BaseModel):
     museo: str | None = None
     sala: str | None = None
     obra: str | None = None
+    session_id: str | None = None
     meta: ResponseMeta | None = None
 
 

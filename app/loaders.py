@@ -289,3 +289,126 @@ def load_text_file_chunks(file_path: Path, *, kind: str) -> list[DocumentChunk]:
         )
 
     return chunks
+
+
+def _extract_balanced_blocks(raw_text: str, *, anchor: str) -> list[str]:
+    anchor_index = raw_text.find(anchor)
+    if anchor_index < 0:
+        return []
+
+    list_start = raw_text.find("[", anchor_index)
+    if list_start < 0:
+        return []
+
+    depth = 0
+    current_start: int | None = None
+    blocks: list[str] = []
+
+    for index in range(list_start, len(raw_text)):
+        char = raw_text[index]
+
+        if char == "{":
+            depth += 1
+            if depth == 1:
+                current_start = index
+        elif char == "}":
+            if depth == 1 and current_start is not None:
+                blocks.append(raw_text[current_start : index + 1])
+                current_start = None
+            depth = max(0, depth - 1)
+        elif char == "]" and depth == 0:
+            break
+
+    return blocks
+
+
+def _extract_string_field(block: str, field_name: str) -> str | None:
+    pattern = rf'{field_name}:\s*"([^"]+)"'
+    match = re.search(pattern, block)
+    return match.group(1).strip() if match else None
+
+
+def _extract_number_field(block: str, field_name: str) -> int | None:
+    pattern = rf"{field_name}:\s*(\d+)"
+    match = re.search(pattern, block)
+    return int(match.group(1)) if match else None
+
+
+def _extract_array_field(block: str, field_name: str) -> list[str]:
+    pattern = rf"{field_name}:\s*\[(.*?)\]"
+    match = re.search(pattern, block, re.DOTALL)
+    if not match:
+        return []
+
+    return [value.strip() for value in re.findall(r'"([^"]+)"', match.group(1))]
+
+
+def load_artwork_chunks_from_ts(file_path: Path) -> list[DocumentChunk]:
+    raw_text = file_path.read_text(encoding="utf-8")
+    blocks = _extract_balanced_blocks(raw_text, anchor="artworks:")
+    chunks: list[DocumentChunk] = []
+
+    for block in blocks:
+        artwork_id = _extract_string_field(block, "id")
+        room_id = _extract_string_field(block, "roomId")
+        title = _extract_string_field(block, "title")
+
+        if not artwork_id or not room_id or not title:
+            continue
+
+        author = _extract_string_field(block, "author") or "N/D"
+        year = _extract_string_field(block, "year") or "N/D"
+        period = _extract_string_field(block, "period") or "N/D"
+        technique = _extract_string_field(block, "technique") or "N/D"
+        summary = _extract_string_field(block, "summary") or "N/D"
+        context = _extract_string_field(block, "context") or "N/D"
+        room_relation = _extract_string_field(block, "roomRelation") or "N/D"
+        location_hint = _extract_string_field(block, "locationHint") or "N/D"
+        zone = _extract_string_field(block, "zone") or "N/D"
+        image = _extract_string_field(block, "image")
+        order = _extract_number_field(block, "order") or 0
+        tags = _extract_array_field(block, "tags")
+        suggested_questions = _extract_array_field(block, "suggestedQuestions")
+
+        lines = [
+            f"Obra: {title}",
+            f"ID de obra: {artwork_id}",
+            f"Sala: {room_id}",
+            f"Zona: {zone}",
+            f"Autor: {author}",
+            f"Anio: {year}",
+            f"Periodo: {period}",
+            f"Tecnica: {technique}",
+            f"Resumen: {summary}",
+            f"Contexto: {context}",
+            f"Relacion con la sala: {room_relation}",
+            f"Ubicacion sugerida: {location_hint}",
+        ]
+        if tags:
+            lines.append(f"Etiquetas: {', '.join(tags)}")
+        if suggested_questions:
+            lines.append(f"Preguntas sugeridas: {', '.join(suggested_questions)}")
+
+        metadata: dict[str, str | int] = {
+            "source": str(file_path),
+            "kind": "app_artwork",
+            "room_id": room_id,
+            "artwork_id": artwork_id,
+            "artwork_title": title,
+            "zone": zone,
+            "order": order,
+        }
+        if image:
+            metadata["image_path"] = image
+            relative_image = image.replace("artworks/", "", 1)
+            metadata["image_url"] = f"/media/artworks/{relative_image}"
+
+        chunks.append(
+            DocumentChunk(
+                id=f"app-artwork-{artwork_id}",
+                text="\n".join(lines),
+                metadata=metadata,
+            )
+        )
+
+    return chunks
