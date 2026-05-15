@@ -68,6 +68,8 @@ Con eso puede:
 - usar el contexto de la obra actual si `museiqApp` lo envia
 - usar metadatos curatoriales de la obra actual para enriquecer la pregunta
 - devolver fragmentos fuente desde Chroma
+- devolver fuentes con imagenes asociadas para que la app las renderice
+- enriquecer la salida markdown para resaltar mejor nombres, fechas y conceptos curatoriales
 
 ## Modelo de consulta actual
 
@@ -106,6 +108,41 @@ Este contrato ya deja preparado el camino para:
 - varios museos con colecciones distintas
 - respuestas mas precisas por obra
 - futuras estrategias de filtrado o ranking por museo/sala/obra
+
+## Formato de respuesta actual
+
+La app movil consume una respuesta JSON con este esquema practico:
+
+```json
+{
+  "respuesta": "Texto base de la respuesta",
+  "markdown": "Version enriquecida en markdown",
+  "fuentes": [
+    {
+      "id": "chunk-1",
+      "source": "pdf",
+      "kind": "book_chunk",
+      "score": 0.87,
+      "text": "Fragmento recuperado",
+      "image_url": "/media/book_figures/Fig_01_p3.png",
+      "source_label": "Libro del museo"
+    }
+  ],
+  "meta": {
+    "total_ms": 3200,
+    "retrieval_ms": 600,
+    "generation_ms": 2400,
+    "source_count": 2
+  }
+}
+```
+
+Notas sobre la salida actual:
+
+- `markdown` es la version preferida por la app cuando existe
+- el backend puede reforzar visualmente anos, nombres y conceptos clave en negrita
+- `fuentes[].image_url` permite mostrar imagenes relacionadas dentro del modal de chat
+- `meta` ayuda a medir tiempos de recuperacion y generacion
 
 ## Requisitos
 
@@ -221,6 +258,7 @@ Desde esa interfaz puedes:
 - hacer preguntas libres
 - indicar `room_id`, `artwork_id` y `top_k`
 - revisar la respuesta y los fragmentos fuente recuperados
+- validar la salida markdown y las imagenes asociadas antes de probar desde la app
 
 ## Endpoints
 
