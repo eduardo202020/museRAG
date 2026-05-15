@@ -150,11 +150,41 @@ Notas sobre la salida actual:
 - LM Studio levantado en `http://127.0.0.1:1234`
 - Un modelo de chat cargado en LM Studio
 - Un modelo de embeddings cargado en LM Studio
+- En Windows, `Poppler` disponible en `PATH` para que `pdf2image` funcione
 
 Configuracion validada en este proyecto:
 
 - `LM_STUDIO_CHAT_MODEL=qwen2.5-7b-instruct`
 - `LM_STUDIO_EMBED_MODEL=text-embedding-nomic-embed-text-v1.5`
+
+## Arranque desde cero en Windows
+
+Si vienes a este proyecto desde una PC Windows donde aun no tienes LM Studio ni modelos descargados, sigue este orden:
+
+1. Instala Python `3.12+`.
+2. Instala LM Studio.
+3. En LM Studio descarga estos modelos:
+   - chat: `qwen2.5-7b-instruct`
+   - embeddings: `text-embedding-nomic-embed-text-v1.5`
+4. Carga ambos modelos dentro de LM Studio.
+5. Activa el servidor local OpenAI-compatible en `http://127.0.0.1:1234`.
+6. Instala Poppler para Windows y agrega su carpeta `bin` al `PATH`.
+   `extract_images.py` y `pdf2image` lo necesitan para procesar el PDF.
+
+Flujo recomendado en PowerShell:
+
+```powershell
+cd C:\ruta\al\repo\museRAG
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+python extract_images.py --rebuild
+python ingest.py --rebuild
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Si `extract_images.py` falla en Windows con errores relacionados a `pdf2image` o `poppler`, casi siempre significa que `Poppler` no esta instalado o no esta visible en el `PATH`.
 
 ## Instalacion
 
@@ -186,6 +216,13 @@ MUSERAG_MAX_SOURCE_CHARS=500
 MUSERAG_CHAT_MAX_TOKENS=220
 CORS_ORIGINS=*
 ```
+
+Para Windows normalmente no necesitas cambiar los nombres de modelo si descargaste exactamente los recomendados arriba.
+Lo mas importante es que:
+
+- LM Studio siga escuchando en `127.0.0.1:1234`
+- el modelo de chat cargado coincida con `LM_STUDIO_CHAT_MODEL`
+- el modelo de embeddings cargado coincida con `LM_STUDIO_EMBED_MODEL`
 
 ## Flujo de ingesta
 
