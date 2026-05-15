@@ -359,6 +359,7 @@ def chat_query(payload: ChatQueryRequest) -> ChatQueryResponse:
         answer, sources, meta = rag_service.answer_question(payload)
         return ChatQueryResponse(
             answer=answer,
+          markdown=answer,
             sources=sources,
             used_artwork_context=payload.artwork_context is not None,
             meta=meta,
@@ -400,6 +401,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             )
         return MobileQuestionResponse(
             respuesta=answer,
+          markdown=answer,
             fuentes=sources,
             museo=payload.museo,
             sala=payload.sala,

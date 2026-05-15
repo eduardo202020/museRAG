@@ -53,6 +53,7 @@ class ResponseMeta(BaseModel):
 
 class ChatQueryResponse(BaseModel):
     answer: str
+    markdown: str | None = None
     sources: list[SourceSnippet]
     used_artwork_context: bool
     meta: ResponseMeta | None = None
@@ -69,6 +70,7 @@ class MobileQuestionRequest(BaseModel):
 
 class MobileQuestionResponse(BaseModel):
     respuesta: str
+    markdown: str | None = None
     fuentes: list[SourceSnippet]
     museo: str | None = None
     sala: str | None = None

@@ -21,14 +21,21 @@ from .schemas import ArtworkContext, ChatQueryRequest, ResponseMeta, SourceSnipp
 
 logger = logging.getLogger("muserag.rag")
 CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+YEAR_PATTERN = re.compile(r"\b(1[0-9]{3}|20[0-9]{2})\b")
 STRUCTURED_RESPONSE_TEMPLATE = (
-    "Devuelve la respuesta final con este formato exacto y en este orden:\n"
-    "Respuesta breve: <explicacion principal en 2 o 3 frases>\n"
-    "Dato clave: <un hallazgo, relacion o detalle puntual en 1 o 2 frases>\n"
-    "Imagen relacionada: <explica brevemente que imagen o tipo de imagen acompana la respuesta; "
-    "si no hay imagen util en las fuentes, di 'No encontre una imagen relacionada clara en las fuentes recuperadas.'>\n"
-    "Siguiente mirada: <sugiere con iniciativa de guia experimentado un detalle para observar, comparar o preguntar despues>\n"
-    "No uses vietas, markdown ni titulos alternativos."
+    "Devuelve la respuesta final UNICAMENTE en Markdown valido y limpio.\n"
+    "Estructura obligatoria:\n"
+    "## Respuesta\n"
+    "<explicacion principal en 2 o 3 frases con al menos una **negrita**>\n\n"
+    "## Dato clave\n"
+    "- <primer punto breve y concreto>\n"
+    "- <segundo punto breve y concreto>\n\n"
+    "## Siguiente mirada\n"
+    "- <sugerencia practica para observar mejor>\n"
+    "- <pregunta breve para continuar el recorrido>\n\n"
+    "Si necesitas subrayar algo importante, usa texto enfatico en **negrita** y, de forma opcional, <u>subrayado</u>.\n"
+    "Destaca en **negrita** nombres propios, fechas y conceptos curatoriales importantes.\n"
+    "No uses bloques de codigo ni tablas."
 )
 MAX_SESSION_TURNS = 3
 MAX_ACTIVE_SESSIONS = 100
@@ -245,18 +252,62 @@ class RagService:
     def _build_low_context_answer(artwork_context: ArtworkContext | None) -> str:
         if artwork_context and artwork_context.title:
             return (
-                f"Respuesta breve: Puedo orientarte sobre {artwork_context.title}, pero ahora mismo el sustento recuperado es limitado y prefiero no afirmar mas de lo que muestran las fuentes.\n"
-                f"Dato clave: Con el contexto curatorial disponible, esta obra se relaciona con {artwork_context.room_relation or 'la narrativa de su sala'} y conviene hacer una pregunta mas puntual para profundizar.\n"
-                "Imagen relacionada: No encontre una imagen relacionada clara en las fuentes recuperadas.\n"
-                f"Siguiente mirada: Si quieres, puedo ayudarte mejor si me preguntas por un detalle visible de {artwork_context.title}, su tecnica o su relacion con la sala."
+                f"## Respuesta\nPuedo orientarte sobre **{artwork_context.title}**, pero ahora mismo el sustento recuperado es limitado y prefiero no afirmar mas de lo que muestran las fuentes.\n\n"
+                f"## Dato clave\n- Esta obra se relaciona con **{artwork_context.room_relation or 'la narrativa de su sala'}**.\n"
+                "- Conviene hacer una pregunta mas puntual para profundizar con evidencia.\n\n"
+                f"## Siguiente mirada\n- Observa un detalle visible de **{artwork_context.title}** (tecnica, material o simbolo).\n"
+                "- Si quieres, puedo continuar con una comparacion con otra pieza de la sala."
             )
 
         return (
-            "Respuesta breve: En este momento no encontre suficiente contexto confiable para responder con precision a esa pregunta.\n"
-            "Dato clave: Si quieres, prueba con una pregunta mas concreta sobre la obra actual, la sala o su importancia dentro del recorrido.\n"
-            "Imagen relacionada: No encontre una imagen relacionada clara en las fuentes recuperadas.\n"
-            "Siguiente mirada: Podemos seguir por una pista mas especifica, como el material de la obra, el personaje representado o lo que comunica dentro de la sala."
+            "## Respuesta\nEn este momento no encontre suficiente contexto confiable para responder con precision a esa pregunta.\n\n"
+            "## Dato clave\n- Una pregunta mas concreta mejora la precision de la respuesta.\n"
+            "- Puedes enfocar en la obra actual, su sala o su importancia historica.\n\n"
+            "## Siguiente mirada\n- Prueba con el material de la obra o el personaje representado.\n"
+            "- Tambien puedo ayudarte con su relacion con el recorrido general."
         )
+
+    @staticmethod
+    def _build_markdown_with_images(answer_markdown: str, sources: list[SourceSnippet]) -> str:
+        cleaned = answer_markdown.strip()
+        if not cleaned:
+            cleaned = "## Respuesta\nNo pude generar una respuesta en este momento."
+
+        # Las imagenes viajan por `sources` y se renderizan en carrusel en la app.
+        # Evitamos inyectar listas markdown para mantener la respuesta textual limpia.
+        return cleaned
+
+    @staticmethod
+    def _emphasize_term(markdown: str, term: str) -> str:
+        clean_term = term.strip()
+        if not clean_term:
+            return markdown
+
+        pattern = re.compile(rf"(?<!\*)\b{re.escape(clean_term)}\b(?!\*)", re.IGNORECASE)
+        return pattern.sub(lambda match: f"**{match.group(0)}**", markdown)
+
+    def _enrich_markdown_emphasis(
+        self,
+        answer_markdown: str,
+        artwork_context: ArtworkContext | None,
+    ) -> str:
+        enriched = answer_markdown
+
+        # Resalta fechas simples de 4 digitos (ej. 1532, 1987, 2024).
+        enriched = YEAR_PATTERN.sub(lambda match: f"**{match.group(0)}**", enriched)
+
+        if artwork_context:
+            emphasis_terms = [
+                artwork_context.title,
+                artwork_context.author,
+                artwork_context.period,
+                artwork_context.technique,
+            ]
+            for term in emphasis_terms:
+                if term:
+                    enriched = self._emphasize_term(enriched, term)
+
+        return enriched
 
     def _build_messages(self, payload: ChatQueryRequest, sources: list[SourceSnippet]) -> list[dict[str, Any]]:
         source_text = "\n\n".join(
@@ -342,7 +393,12 @@ class RagService:
         support_level = self._compute_support_level(sources, payload.artwork_context)
 
         if support_level == "bajo" and payload.artwork_context is None:
-            answer = self._build_low_context_answer(payload.artwork_context)
+            answer_markdown = self._build_low_context_answer(payload.artwork_context)
+            enriched_markdown = self._enrich_markdown_emphasis(
+                answer_markdown,
+                payload.artwork_context,
+            )
+            answer = self._build_markdown_with_images(enriched_markdown, sources)
             total_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
                 "Consulta RAG | top_k=%s | soporte=%s | filtros=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=0.0 | total_ms=%.1f",
@@ -377,19 +433,24 @@ class RagService:
         generation_ms = (time.perf_counter() - generation_started_at) * 1000
         total_ms = (time.perf_counter() - started_at) * 1000
 
-        answer = response.choices[0].message.content or "No pude generar una respuesta en este momento."
-        answer = answer.strip()
-        if self._contains_cjk(answer):
+        raw_answer = response.choices[0].message.content or "No pude generar una respuesta en este momento."
+        raw_answer = raw_answer.strip()
+        if self._contains_cjk(raw_answer):
             logger.warning("Se detecto salida con caracteres CJK; reintentando respuesta en espanol.")
-            retried_answer = self._regenerate_in_spanish(messages, answer)
+            retried_answer = self._regenerate_in_spanish(messages, raw_answer)
             if retried_answer and not self._contains_cjk(retried_answer):
-                answer = retried_answer
+                raw_answer = retried_answer
             else:
-                answer = (
-                    "Puedo ayudarte con esa pregunta, pero en este momento hubo un problema de idioma en la generacion. "
-                    "Intenta formularla otra vez para responderte en espanol."
+                raw_answer = (
+                    "## Respuesta\nPuedo ayudarte con esa pregunta, pero en este momento hubo un problema de idioma en la generacion.\n\n"
+                    "## Siguiente mirada\nIntenta formularla otra vez para responderte en espanol."
                 )
-        self._remember_turn(payload.session_id, payload.question, answer)
+        enriched_markdown = self._enrich_markdown_emphasis(
+            raw_answer,
+            payload.artwork_context,
+        )
+        answer = self._build_markdown_with_images(enriched_markdown, sources)
+        self._remember_turn(payload.session_id, payload.question, raw_answer)
         logger.info(
             "Consulta RAG | top_k=%s | soporte=%s | filtros=%s | fuentes=%s | retrieval_ms=%.1f | generation_ms=%.1f | total_ms=%.1f",
             top_k,
