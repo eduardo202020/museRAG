@@ -8,6 +8,7 @@ Su funcion principal hoy es responder preguntas contextualizadas por:
 - sala
 - obra
 - contexto curatorial de la pieza actual
+- modo de respuesta pedido por la app (`breve`, `explicada`, `infantil`)
 
 La version actual esta configurada para un museo, pero la estructura de entrada ya contempla `museo` para evolucionar luego a un escenario multi-museo sin cambiar el contrato principal del API.
 
@@ -28,6 +29,7 @@ En la practica, el backend puede combinar:
 - sala actual
 - obra actual
 - metadatos de la obra como titulo, autor, periodo, tecnica y resumen
+- relaciones de la obra con la sala, etiquetas curatoriales y obras cercanas
 - fragmentos recuperados desde la base vectorial
 
 Esto permite una experiencia RAG enfocada en mediacion cultural, no solo en busqueda documental.
@@ -67,6 +69,8 @@ Con eso puede:
 - responder con contexto de sala y zona
 - usar el contexto de la obra actual si `museiqApp` lo envia
 - usar metadatos curatoriales de la obra actual para enriquecer la pregunta
+- modular el estilo de respuesta segun el modo pedido por la app
+- priorizar comparaciones con obras vecinas o de la misma sala cuando la pregunta lo sugiera
 - devolver fragmentos fuente desde Chroma
 - devolver fuentes con imagenes asociadas para que la app las renderice
 - enriquecer la salida markdown para resaltar mejor nombres, fechas y conceptos curatoriales
@@ -85,9 +89,11 @@ Payload esperado:
   "museo": "tumbas-reales-de-sipan",
   "sala": "SALA_1",
   "obra": "Senor de Sipan",
+  "modo": "explicada",
   "artwork_context": {
     "id": "obra-1-1-L",
     "title": "Senor de Sipan",
+    "room_name": "Sala 1",
     "author": "Elite moche",
     "year": "siglo III d.C.",
     "period": "Moche Medio",
@@ -96,6 +102,9 @@ Payload esperado:
     "context": "Resume la magnificencia del gobernante enterrado con metales, textiles y simbolos de autoridad.",
     "room_relation": "Introduce el relato de poder y entierro de la Sala 1.",
     "location_hint": "Entrada, lado izquierdo.",
+    "route_hint": "Comienza en la entrada de la Sala 1, lado izquierdo.",
+    "tags": ["sipan", "elite", "moche"],
+    "nearby_artworks": ["Tumba principal de Sipan", "Conjunto de joyas de elite"],
     "suggested_questions": [
       "Quien fue el Senor de Sipan?"
     ]
@@ -143,6 +152,7 @@ Notas sobre la salida actual:
 - el backend puede reforzar visualmente anos, nombres y conceptos clave en negrita
 - `fuentes[].image_url` permite mostrar imagenes relacionadas dentro del modal de chat
 - `meta` ayuda a medir tiempos de recuperacion y generacion
+- `meta.support_level` y `meta.applied_filters` ayudan a entender que tan bien sustentada estuvo la respuesta
 
 ## Requisitos
 
