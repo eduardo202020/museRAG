@@ -372,6 +372,14 @@ def chat_query(payload: ChatQueryRequest) -> ChatQueryResponse:
 def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
     started_at = time.perf_counter()
     try:
+        logger.info(
+            "HTTP /api/preguntar | pregunta=%r | museo=%s | sala=%s | obra=%s | session_id=%s",
+            payload.pregunta,
+            payload.museo or "N/D",
+            payload.sala or "N/D",
+            payload.obra or "N/D",
+            payload.session_id or "N/D",
+        )
         if settings.muserag_log_interactions:
             logger.info(
                 "Solicitud app | pregunta=%r | museo=%s | sala=%s | obra=%s",
@@ -387,6 +395,7 @@ def mobile_question(payload: MobileQuestionRequest) -> MobileQuestionResponse:
             room_id=payload.sala,
             artwork_id=payload.obra,
             session_id=payload.session_id,
+            response_mode=payload.modo,
             artwork_context=payload.artwork_context,
         )
         answer, sources, meta = rag_service.answer_question(internal_payload)

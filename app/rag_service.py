@@ -41,6 +41,25 @@ MAX_SESSION_TURNS = 3
 MAX_ACTIVE_SESSIONS = 100
 MIN_CONTEXTUAL_RESULTS = 2
 LOW_SUPPORT_THRESHOLD = 0.22
+PRIMARY_SOURCE_KINDS = ("app_artwork", "museum_json", "pdf", "app_data_ts")
+COMPARISON_HINT_PATTERN = re.compile(
+    r"\b(compara|comparar|comparacion|otra obra|otra pieza|relaciona|relacion|siguiente|anterior|diferencia|parecido)\b",
+    re.IGNORECASE,
+)
+RESPONSE_MODE_PROMPTS = {
+    "breve": (
+        "Modo breve: responde de forma sintetica, directa y facil de escuchar. "
+        "Usa 2 o 3 frases principales y puntos muy cortos."
+    ),
+    "explicada": (
+        "Modo explicada: responde con mas contexto curatorial, manteniendo claridad y ritmo de visita. "
+        "Puedes desarrollar un poco mas las conexiones historicas y simbolicas."
+    ),
+    "infantil": (
+        "Modo infantil: explica con lenguaje muy sencillo, cercano y curioso, sin infantilizar en exceso ni inventar datos. "
+        "Usa frases cortas y ejemplos faciles de imaginar."
+    ),
+}
 
 
 class SessionMemoryTurn(dict[str, str]):
@@ -55,6 +74,12 @@ class RagService:
         self.chroma = chromadb.PersistentClient(path=str(settings.chroma_dir))
         self.collection = self.chroma.get_or_create_collection(name=settings.muserag_collection, metadata={"hnsw:space": "cosine"})
         self.session_memories: dict[str, deque[SessionMemoryTurn]] = {}
+
+    @staticmethod
+    def _normalize_where(where: dict[str, Any]) -> dict[str, Any]:
+        if len(where) <= 1:
+            return where
+        return {"$and": [{key: value} for key, value in where.items()]}
 
     def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         response = self.client.embeddings.create(model=self.settings.lm_studio_embed_model, input=texts)
@@ -100,17 +125,17 @@ class RagService:
 
     def _run_query(
         self,
-        question: str,
+        query_text: str,
         top_k: int,
         *,
         where: dict[str, Any] | None = None,
     ) -> list[SourceSnippet]:
-        query_embedding = self._embed_texts([question])[0]
+        query_embedding = self._embed_texts([query_text])[0]
         result = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["documents", "metadatas", "distances"],
-            where=where,
+            where=self._normalize_where(where) if where else None,
         )
 
         documents = result.get("documents", [[]])[0]
@@ -138,43 +163,142 @@ class RagService:
             )
         return snippets
 
+    def _get_exact_sources(
+        self,
+        *,
+        where: dict[str, Any],
+        limit: int = 1,
+    ) -> list[SourceSnippet]:
+        result = self.collection.get(
+            where=self._normalize_where(where),
+            limit=limit,
+            include=["documents", "metadatas"],
+        )
+
+        documents = result.get("documents", [])
+        metadatas = result.get("metadatas", [])
+        ids = result.get("ids", [])
+
+        snippets: list[SourceSnippet] = []
+        for idx, text in enumerate(documents):
+            metadata = metadatas[idx] or {}
+            kind = str(metadata.get("kind", "unknown"))
+            image_url = metadata.get("image_url")
+            snippets.append(
+                SourceSnippet(
+                    id=str(ids[idx]),
+                    source=str(metadata.get("source", "unknown")),
+                    kind=kind,
+                    score=1.0,
+                    text=text,
+                    metadata={str(k): v for k, v in metadata.items()},
+                    image_url=str(image_url) if image_url else None,
+                    source_label=self._source_label_for(kind),
+                )
+            )
+        return snippets
+
     @staticmethod
     def _dedupe_sources(sources: list[SourceSnippet]) -> list[SourceSnippet]:
         deduped: list[SourceSnippet] = []
         seen_ids: set[str] = set()
-        for source in sorted(sources, key=lambda item: item.score, reverse=True):
+        for source in sources:
             if source.id in seen_ids:
                 continue
             seen_ids.add(source.id)
             deduped.append(source)
         return deduped
 
+    @staticmethod
+    def _build_query_text(payload: ChatQueryRequest) -> str:
+        parts = [payload.question.strip()]
+        if payload.artwork_context and payload.artwork_context.title:
+            parts.append(f"Obra actual: {payload.artwork_context.title}")
+        elif payload.artwork_id:
+            parts.append(f"ID de obra: {payload.artwork_id}")
+
+        if payload.room_id:
+            parts.append(f"Sala actual: {payload.room_id}")
+        if payload.museum_id:
+            parts.append(f"Museo: {payload.museum_id}")
+
+        if payload.artwork_context and payload.artwork_context.summary:
+            parts.append(f"Resumen curatorial: {payload.artwork_context.summary}")
+        if payload.artwork_context and payload.artwork_context.context:
+            parts.append(f"Contexto interpretativo: {payload.artwork_context.context}")
+        if payload.artwork_context and payload.artwork_context.tags:
+            parts.append(f"Temas clave: {', '.join(payload.artwork_context.tags)}")
+        if payload.artwork_context and payload.artwork_context.nearby_artworks:
+            parts.append(
+                "Obras relacionadas del mismo recorrido: "
+                + ", ".join(payload.artwork_context.nearby_artworks[:4])
+            )
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _question_needs_room_comparison(question: str) -> bool:
+        return bool(COMPARISON_HINT_PATTERN.search(question))
+
+    @staticmethod
+    def _source_priority(source: SourceSnippet) -> tuple[int, float]:
+        try:
+            priority = PRIMARY_SOURCE_KINDS.index(source.kind)
+        except ValueError:
+            priority = len(PRIMARY_SOURCE_KINDS)
+        return (priority, -source.score)
+
     def _query_sources(self, payload: ChatQueryRequest, top_k: int) -> tuple[list[SourceSnippet], list[str]]:
         collected: list[SourceSnippet] = []
         applied_filters: list[str] = []
+        query_text = self._build_query_text(payload)
+
+        if payload.artwork_id:
+            exact_artwork_sources = self._get_exact_sources(where={"artwork_id": payload.artwork_id}, limit=1)
+            if exact_artwork_sources:
+                applied_filters.append(f"artwork_id={payload.artwork_id}")
+                collected.extend(exact_artwork_sources)
+
+        if payload.room_id:
+            room_narrative_sources = self._get_exact_sources(
+                where={"kind": "museum_json", "room_id": payload.room_id},
+                limit=1,
+            )
+            if room_narrative_sources:
+                applied_filters.append(f"room_id={payload.room_id}")
+                collected.extend(room_narrative_sources)
 
         if payload.artwork_id:
             artwork_sources = self._run_query(
-                payload.question,
+                query_text,
                 top_k=max(top_k, MIN_CONTEXTUAL_RESULTS),
                 where={"artwork_id": payload.artwork_id},
             )
             if artwork_sources:
-                applied_filters.append(f"artwork_id={payload.artwork_id}")
                 collected.extend(artwork_sources)
 
         if payload.room_id and len(self._dedupe_sources(collected)) < MIN_CONTEXTUAL_RESULTS:
             room_sources = self._run_query(
-                payload.question,
+                query_text,
                 top_k=max(top_k, MIN_CONTEXTUAL_RESULTS),
                 where={"room_id": payload.room_id},
             )
             if room_sources:
-                applied_filters.append(f"room_id={payload.room_id}")
                 collected.extend(room_sources)
 
-        collected.extend(self._run_query(payload.question, top_k=top_k))
-        return self._dedupe_sources(collected)[:top_k], applied_filters
+        if payload.room_id and self._question_needs_room_comparison(payload.question):
+            related_room_sources = self._run_query(
+                query_text,
+                top_k=max(top_k, 4),
+                where={"room_id": payload.room_id},
+            )
+            if related_room_sources:
+                applied_filters.append(f"room_comparison={payload.room_id}")
+                collected.extend(related_room_sources)
+
+        collected.extend(self._run_query(query_text, top_k=max(top_k, 3)))
+        deduped = self._dedupe_sources(collected)
+        ranked = sorted(deduped, key=self._source_priority)
+        return ranked[:top_k], list(dict.fromkeys(applied_filters))
 
     def _trim_source_text(self, text: str) -> str:
         max_chars = max(120, self.settings.muserag_max_source_chars)
@@ -190,6 +314,7 @@ class RagService:
         lines = [
             f"ID de obra: {artwork_context.id or 'N/D'}",
             f"Titulo: {artwork_context.title or 'N/D'}",
+            f"Sala legible: {artwork_context.room_name or 'N/D'}",
             f"Autor: {artwork_context.author or 'N/D'}",
             f"Anio: {artwork_context.year or 'N/D'}",
             f"Periodo: {artwork_context.period or 'N/D'}",
@@ -199,6 +324,14 @@ class RagService:
             f"Relacion con la sala: {artwork_context.room_relation or 'N/D'}",
             f"Ubicacion sugerida: {artwork_context.location_hint or 'N/D'}",
         ]
+        if artwork_context.route_hint:
+            lines.append(f"Siguiente paso sugerido: {artwork_context.route_hint}")
+        if artwork_context.tags:
+            lines.append(f"Etiquetas curatoriales: {', '.join(artwork_context.tags)}")
+        if artwork_context.nearby_artworks:
+            lines.append(
+                f"Obras vecinas o relacionadas: {', '.join(artwork_context.nearby_artworks[:4])}"
+            )
         if artwork_context.suggested_questions:
             lines.append(f"Preguntas sugeridas: {', '.join(artwork_context.suggested_questions)}")
         return "\n".join(lines)
@@ -299,10 +432,12 @@ class RagService:
         if artwork_context:
             emphasis_terms = [
                 artwork_context.title,
+                artwork_context.room_name,
                 artwork_context.author,
                 artwork_context.period,
                 artwork_context.technique,
             ]
+            emphasis_terms.extend(artwork_context.tags[:4])
             for term in emphasis_terms:
                 if term:
                     enriched = self._emphasize_term(enriched, term)
@@ -312,23 +447,37 @@ class RagService:
     def _build_messages(self, payload: ChatQueryRequest, sources: list[SourceSnippet]) -> list[dict[str, Any]]:
         source_text = "\n\n".join(
             [
-                f"Fuente {index + 1} ({source.source_label or source.kind}, score={source.score:.3f}):\n{self._trim_source_text(source.text)}"
+                (
+                    f"Fuente {index + 1}\n"
+                    f"- tipo: {source.source_label or source.kind}\n"
+                    f"- score: {source.score:.3f}\n"
+                    f"- metadata: {source.metadata}\n"
+                    f"- extracto: {self._trim_source_text(source.text)}"
+                )
                 for index, source in enumerate(sources)
             ]
         )
         artwork_context = self._artwork_context_block(payload.artwork_context)
         session_memory = self._get_session_memory_block(payload.session_id)
         support_level = self._compute_support_level(sources, payload.artwork_context)
+        response_mode = (payload.response_mode or "breve").strip().lower()
+        mode_instruction = RESPONSE_MODE_PROMPTS.get(response_mode, RESPONSE_MODE_PROMPTS["breve"])
 
         system_prompt = (
             "Eres MuseIQ, un guia de museo en espanol. "
             "Debes responder exclusivamente en espanol latinoamericano. "
             "No uses chino, ingles ni otro idioma salvo nombres propios o terminos arqueologicos inevitables. "
-            "Responde con claridad, tono cercano y precision historica. "
-            "Usa primero el contexto de la obra actual si existe y luego el conocimiento recuperado. "
+            "Responde con claridad, tono cercano, precision historica y sensibilidad curatorial. "
+            "Usa primero el contexto de la obra actual y la ficha curatorial si existen, luego la narrativa de sala y por ultimo el PDF. "
+            "La jerarquia de evidencia es: ficha curatorial de la obra, narrativa de sala, libro del museo, dataset adicional. "
+            "Nunca cambies cultura, periodo, tecnica, sala o identidad de la obra si la ficha curatorial o el contexto actual indican otra cosa. "
             "Si existe memoria conversacional reciente, usala para mantener continuidad sin repetir toda la respuesta anterior. "
-            "Actua como un guia experimentado: no te limites a contestar, tambien sugiere un siguiente detalle para mirar o una relacion valiosa para seguir explorando. "
+            "Actua como un mediador de museo: no te limites a contestar, ayuda a mirar mejor la obra, relaciona el detalle observado con el recorrido y sugiere un siguiente foco de atencion. "
+            "Cuando la pregunta lo permita, explica primero que se ve o que significa y luego por que importa dentro de la sala. "
+            "Si el visitante compara o pide relacion con otra obra, usa primero las obras vecinas y la narrativa de sala antes de generalizar. "
             "Si la respuesta no esta sustentada por el contexto, dilo con honestidad y evita inventar datos. "
+            "Si hay duda o conflicto entre fuentes, prioriza la fuente curatorial mas cercana a la obra y explicalo de forma breve. "
+            f"{mode_instruction} "
             "Responde en maximo 6 frases. "
             f"{STRUCTURED_RESPONSE_TEMPLATE}"
         )
@@ -338,6 +487,7 @@ class RagService:
             f"- museum_id: {payload.museum_id or 'N/D'}\n"
             f"- room_id: {payload.room_id or 'N/D'}\n"
             f"- artwork_id: {payload.artwork_id or 'N/D'}\n"
+            f"- response_mode: {response_mode}\n"
             f"- support_level: {support_level}\n\n"
             f"Memoria conversacional reciente:\n{session_memory or 'No disponible'}\n\n"
             f"Contexto de obra actual:\n{artwork_context or 'No disponible'}\n\n"
@@ -426,7 +576,7 @@ class RagService:
         generation_started_at = time.perf_counter()
         response = self.client.chat.completions.create(
             model=self.settings.lm_studio_chat_model,
-            temperature=0.2,
+            temperature=0.08,
             messages=messages,
             max_tokens=self.settings.muserag_chat_max_tokens,
         )

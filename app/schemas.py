@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ArtworkContext(BaseModel):
     id: str | None = None
     title: str | None = None
+    room_name: str | None = None
     author: str | None = None
     year: str | None = None
     period: str | None = None
@@ -16,6 +17,9 @@ class ArtworkContext(BaseModel):
     context: str | None = None
     room_relation: str | None = None
     location_hint: str | None = None
+    route_hint: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    nearby_artworks: list[str] = Field(default_factory=list)
     suggested_questions: list[str] = Field(default_factory=list)
 
 
@@ -28,6 +32,7 @@ class ChatQueryRequest(BaseModel):
     artwork_id: str | None = None
     session_id: str | None = None
     top_k: int | None = None
+    response_mode: str | None = None
     artwork_context: ArtworkContext | None = None
 
 
@@ -65,6 +70,7 @@ class MobileQuestionRequest(BaseModel):
     sala: str | None = None
     obra: str | None = None
     session_id: str | None = None
+    modo: str | None = None
     artwork_context: ArtworkContext | None = None
 
 

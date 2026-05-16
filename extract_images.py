@@ -23,27 +23,27 @@ def main() -> None:
     figures_dir = Path(settings.base_dir) / "assets" / "book_figures"
 
     if args.rebuild:
-        print(f"🗑️  Limpiando directorio: {figures_dir}")
+        print(f"[INFO] Limpiando directorio: {figures_dir}")
         if figures_dir.exists():
             for img in figures_dir.glob("*.png"):
                 img.unlink()
                 print(f"   Eliminada: {img.name}")
 
-    print(f"\n📘 Procesando PDF: {pdf_path}")
-    print(f"📁 Destino: {figures_dir}\n")
+    print(f"\n[INFO] Procesando PDF: {pdf_path}")
+    print(f"[INFO] Destino: {figures_dir}\n")
 
     image_map = extract_pdf_images_batch(pdf_path, figures_dir)
 
-    print(f"📊 Resumen:")
+    print("[INFO] Resumen:")
     print(f"   Total de imágenes: {len(image_map)}")
     print(f"   Directorio: {figures_dir}")
     
     if image_map:
-        print(f"\n📋 Figuras extraídas:")
+        print("\n[INFO] Figuras extraidas:")
         for fig_num in sorted(image_map.keys(), key=lambda x: int(x) if x.isdigit() else 999):
-            print(f"   • Fig. {fig_num}: {image_map[fig_num]}")
+            print(f"   - Fig. {fig_num}: {image_map[fig_num]}")
 
-    print(f"\n✅ Las imágenes están listas para consulta mediante RAG.")
+    print("\n[OK] Las imagenes estan listas para consulta mediante RAG.")
     print(f"Ejecuta: python ingest.py --rebuild")
 
 

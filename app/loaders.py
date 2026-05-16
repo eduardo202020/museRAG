@@ -75,11 +75,11 @@ def extract_pdf_images_batch(pdf_path: Path, output_dir: Path) -> dict[str, str]
     image_map: dict[str, str] = {}
 
     if not HAS_PDF2IMAGE:
-        print("⚠️  pdf2image no disponible. Intenta: pip install pdf2image")
-        print("   Asegúrate de tener poppler instalado en tu sistema.")
+        print("[WARN] pdf2image no disponible. Intenta: pip install pdf2image")
+        print("   Asegurate de tener poppler instalado en tu sistema.")
         return {}
 
-    print(f"🖼️ Extrayendo imágenes del PDF: {pdf_path.name}")
+    print(f"[INFO] Extrayendo imagenes del PDF: {pdf_path.name}")
     
     try:
         # Convert PDF to images using pdf2image (handles JPEG2000, etc.)
@@ -108,23 +108,23 @@ def extract_pdf_images_batch(pdf_path: Path, output_dir: Path) -> dict[str, str]
                     filepath = output_dir / filename
                     page_image.save(str(filepath), "PNG")
                     image_map[fig_num] = filename
-                    print(f"   ✓ Página {page_index}: guardada {filename}")
+                    print(f"   [OK] Pagina {page_index}: guardada {filename}")
                 else:
                     # Page without explicit figure reference
                     filename = f"page_{page_index}.png"
                     filepath = output_dir / filename
                     page_image.save(str(filepath), "PNG")
-                    print(f"   ℹ️  Página {page_index}: guardada {filename} (sin referencia de figura)")
+                    print(f"   [INFO] Pagina {page_index}: guardada {filename} (sin referencia de figura)")
 
             except Exception as e:
-                print(f"   ✗ Página {page_index}: {type(e).__name__}")
+                print(f"   [ERROR] Pagina {page_index}: {type(e).__name__}")
 
-        print(f"✅ Extracción completada: {len(image_map)} imágenes con referencias de figuras\n")
+        print(f"[OK] Extraccion completada: {len(image_map)} imagenes con referencias de figuras\n")
         return image_map
 
     except Exception as e:
-        print(f"❌ Error al convertir PDF: {e}")
-        print(f"   Asegúrate de tener poppler instalado (apt-get install poppler-utils)")
+        print(f"[ERROR] Error al convertir PDF: {e}")
+        print("   Asegurate de tener poppler instalado y visible en PATH.")
         return {}
 
 
@@ -322,6 +322,18 @@ def _extract_balanced_blocks(raw_text: str, *, anchor: str) -> list[str]:
     return blocks
 
 
+def _find_artworks_list_start(raw_text: str) -> int:
+    museum_anchor = raw_text.find("export const museumMock")
+    if museum_anchor < 0:
+        return -1
+
+    artworks_anchor = raw_text.find("artworks:", museum_anchor)
+    if artworks_anchor < 0:
+        return -1
+
+    return raw_text.find("[", artworks_anchor)
+
+
 def _extract_string_field(block: str, field_name: str) -> str | None:
     pattern = rf'{field_name}:\s*"([^"]+)"'
     match = re.search(pattern, block)
@@ -345,7 +357,11 @@ def _extract_array_field(block: str, field_name: str) -> list[str]:
 
 def load_artwork_chunks_from_ts(file_path: Path) -> list[DocumentChunk]:
     raw_text = file_path.read_text(encoding="utf-8")
-    blocks = _extract_balanced_blocks(raw_text, anchor="artworks:")
+    list_start = _find_artworks_list_start(raw_text)
+    if list_start < 0:
+        return []
+
+    blocks = _extract_balanced_blocks(raw_text[list_start:], anchor="[")
     chunks: list[DocumentChunk] = []
 
     for block in blocks:
